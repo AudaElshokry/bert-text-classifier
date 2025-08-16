@@ -76,6 +76,3 @@ python classify/train.py \
 
  Extend dataset support beyond sentiment
 
-👨‍💻 Author
-
-Auda Elshokry  — github.com/AudaElshokry/
