@@ -1,9 +1,11 @@
-torch>=2.3.0
-torchvision>=0.17.2
-torchtext>=0.18.0
-transformers==4.40.2
-seqeval==1.2.2
-pandas
-scikit-learn
-tqdm
-matplotlib
+!pip install -q --upgrade \
+  torch==2.3.0 \
+  torchvision==0.17.2 \
+  torchtext==0.18.0 \
+  transformers==4.41.2 \
+  sentence-transformers==2.2.2 \
+  seqeval==1.2.2 \
+  pandas \
+  scikit-learn \
+  tqdm \
+  matplotlib
