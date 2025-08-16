@@ -17,22 +17,7 @@ bert-text-classifier/
 ├─ requirements.txt
 └─ README.md
 
-bash
-Copy
-Edit
 
-## Quick Start (Colab)
-```bash
-!git clone https://github.com/<YOU>/bert-text-classifier.git /content/bert-text-classifier
-!pip -q install -r /content/bert-text-classifier/requirements.txt
-
-!python /content/bert-text-classifier/classify/train.py \
-  --train_path /content/bert-text-classifier/data/train.csv \
-  --val_path   /content/bert-text-classifier/data/val.csv \
-  --test_path  /content/bert-text-classifier/data/test.csv \
-  --output_path /content/output \
-  --bert_model bert-base-multilingual-cased \
-  --batch_size 16 --max_epochs 5 --learning_rate 2e-5
 Outputs:
 
 test_metrics.json
@@ -45,11 +30,6 @@ confusion_matrix.png
 
 best_model.pt
 
-pgsql
-Copy
-Edit
-
----
 
 ## What changed vs. before (high-impact fixes)
 - ✅ Correct import paths (`classify.*`, not `comp9312.*`).
