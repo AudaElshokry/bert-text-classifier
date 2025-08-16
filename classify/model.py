@@ -1,24 +1,20 @@
-from torch import nn
-from transformers import BertModel
-import logging
-
-logger = logging.getLogger(__name__)
+from typing import Dict, Optional
+from transformers import AutoModelForSequenceClassification
 
 
-class BertClassifier(nn.Module):
-    def __init__(self, bert_model="aubmindlab/bert-base-arabertv2", num_labels=2, dropout=0.1):
-        super().__init__()
-
-        self.bert_model = bert_model
-        self.num_labels = num_labels
-        self.dropout = dropout
-
-        self.bert = BertModel.from_pretrained(bert_model)
-        self.dropout = nn.Dropout(dropout)
-        self.linear = nn.Linear(768, num_labels)
-
-    def forward(self, x, mask):
-        output = self.bert(x, attention_mask=mask)
-        y = self.dropout(output.pooler_output)
-        logits = self.linear(y)
-        return logits
+def build_model(
+    model_name: str,
+    num_labels: int,
+    id2label: Optional[Dict[int, str]] = None,
+    label2id: Optional[Dict[str, int]] = None,
+):
+    """
+    Builds a sequence classification model with num_labels and optional label maps.
+    Using id2label/label2id helps nice metric reports on the Hub / logs.
+    """
+    return AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=num_labels,
+        id2label=id2label,
+        label2id=label2id,
+    )

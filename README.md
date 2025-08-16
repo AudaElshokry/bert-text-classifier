@@ -1,78 +1,61 @@
-# BERT Text Classifier (Arabic Sentiment Analysis)
+# BERT Text Classifier (Arabic)
 
-This project implements a BERT-based text classification pipeline for Arabic text (e.g., sentiment detection).  
-It is organized into two main folders:
+Train a BERT-based classifier on CSV files with columns: `text,label`.
 
-- **`classify/`** → All Python modules (data loading, model definition, training loop, utilities).
-- **`data/`** → Dataset files (`train.csv`, `val.csv`, `test.csv`).
-
-## 📂 Project Structure
+## Structure
 bert-text-classifier/
-│
-├── classify/
-│ ├── init.py
-│ ├── data.py
-│ ├── model.py
-│ ├── trainer.py
-│ ├── train.py
-│ └── utils.py
-│
-├── data/
-│ ├── train.csv
-│ ├── val.csv
-│ └── test.csv
-│
-├── requirements.txt
-└── README.md
+├─ classify/
+│ ├─ data.py # Dataset + collate_fn (tokenizer)
+│ ├─ model.py # build_model (HF)
+│ ├─ trainer.py # training loop, eval, reports
+│ ├─ utils.py # seeding, CSV helpers, label maps
+│ └─ train.py # CLI entrypoint
+├─ data/
+│ ├─ train.csv
+│ ├─ val.csv
+│ └─ test.csv
+├─ requirements.txt
+└─ README.md
 
+bash
+Copy
+Edit
 
-## 🚀 Features
-- Uses Hugging Face Transformers for BERT and tokenization.
-- Training, validation, and testing pipeline with clear separation.
-- Easily tunable hyperparameters (epochs, batch size, learning rate, model).
-- Compatible with Colab and GPU acceleration.
-
-## ⚙️ Installation
-Clone the repository and install dependencies:
-
+## Quick Start (Colab)
 ```bash
-git clone https://github.com/USERNAME/bert-text-classifier.git
-cd bert-text-classifier
-pip install -r requirements.txt
+!git clone https://github.com/<YOU>/bert-text-classifier.git /content/bert-text-classifier
+!pip -q install -r /content/bert-text-classifier/requirements.txt
 
-📊 Dataset Format
-
-The CSV files (train.csv, val.csv, test.csv) must contain two columns:
-
-text → input sentence
-
-label → class label (string or numeric)
-
-Example:
-
-text,label
-"هذا المنتج رائع",Positive
-"لسانك قذر يا قمامه",Negative
-
-▶️ Training
-
-Run the training script:
-
-python classify/train.py \
-  --train_path data/train.csv \
-  --val_path data/val.csv \
-  --test_path data/test.csv \
-  --output_path output/ \
+!python /content/bert-text-classifier/classify/train.py \
+  --train_path /content/bert-text-classifier/data/train.csv \
+  --val_path   /content/bert-text-classifier/data/val.csv \
+  --test_path  /content/bert-text-classifier/data/test.csv \
+  --output_path /content/output \
   --bert_model bert-base-multilingual-cased \
-  --batch_size 16 \
-  --max_epochs 5 \
-  --learning_rate 2e-5
+  --batch_size 16 --max_epochs 5 --learning_rate 2e-5
+Outputs:
 
-🔍 To-Do
+test_metrics.json
 
- Add Optuna hyperparameter search
+preds_test.csv
 
- Add confusion matrix & metrics plotting
+classification_report.txt
 
- Extend dataset support beyond sentiment
+confusion_matrix.png
 
+best_model.pt
+
+pgsql
+Copy
+Edit
+
+---
+
+## What changed vs. before (high-impact fixes)
+- ✅ Correct import paths (`classify.*`, not `comp9312.*`).
+- ✅ Proper `attention_mask` dtype (long/bool).
+- ✅ Gradient clipping applied.
+- ✅ Early stopping on `val f1_macro` + best checkpoint restore.
+- ✅ Clean metrics output + confusion matrix + classification report.
+- ✅ Safe `CUDA_VISIBLE_DEVICES` handling (uses provided IDs).
+- ✅ Optional `--fp16` mixed precision for speed.
