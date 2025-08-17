@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
 import os
-import json
 
 import torch
 from torch.utils.data import DataLoader
@@ -76,21 +75,21 @@ class BertTrainer:
         train_loader = self._loader(self.train_ds, shuffle=True)
         total_steps = max(1, len(train_loader) * self.args.epochs)
         optimizer, scheduler = self._optim_sched(total_steps)
-        scaler = torch.cuda.amp.GradScaler(enabled=self.args.fp16)
+        scaler = torch.amp.GradScaler("cuda", enabled=self.args.fp16)
 
         best_f1 = -1.0
         patience_left = self.args.patience
         best_path = None
 
         for epoch in range(1, self.args.epochs + 1):
-            self.model.train()  # ensure we're back to train mode each epoch
+            self.model.train()  # ensure train mode each epoch
             pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.args.epochs}")
             running_loss = 0.0
 
             for batch in pbar:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
 
-                with torch.cuda.amp.autocast(enabled=self.args.fp16):
+                with torch.amp.autocast("cuda", enabled=self.args.fp16):
                     out = self.model(**batch)
                     loss = out.loss
 
@@ -177,8 +176,18 @@ class BertTrainer:
         """Write a classification report and a confusion matrix image to out_dir."""
         os.makedirs(out_dir, exist_ok=True)
 
-        # Classification report
-        report = classification_report(trues, preds, target_names=label_names, digits=4, zero_division=0)
+        # Keep label indices stable even if a class is missing in y_true
+        labels_idx = list(range(len(label_names))) if label_names else None
+
+        # Classification report (robust)
+        report = classification_report(
+            trues,
+            preds,
+            labels=labels_idx,
+            target_names=label_names,
+            digits=4,
+            zero_division=0
+        )
         with open(os.path.join(out_dir, "classification_report.txt"), "w", encoding="utf-8") as f:
             f.write(report)
 
@@ -186,7 +195,6 @@ class BertTrainer:
         import matplotlib.pyplot as plt
         import numpy as np
 
-        labels_idx = list(range(len(label_names))) if label_names else None
         cm = confusion_matrix(trues, preds, labels=labels_idx)
 
         fig, ax = plt.subplots(figsize=(6, 5))
