@@ -4,7 +4,9 @@ import os
 import json
 import torch
 from torch.utils.data import DataLoader
-from transformers import AdamW, get_linear_schedule_with_warmup
+#from transformers import AdamW, get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup
+import torch.optim as optim
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 from tqdm.auto import tqdm
 
@@ -55,7 +57,7 @@ class BertTrainer:
         )
 
     def _optim_sched(self, total_steps):
-        optimizer = AdamW(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
+        optimizer = optim.AdamW(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
         warmup = int(total_steps * self.args.warmup_ratio)
         scheduler = get_linear_schedule_with_warmup(optimizer, warmup, total_steps)
         return optimizer, scheduler
@@ -72,6 +74,7 @@ class BertTrainer:
         best_path = None
 
         for epoch in range(1, self.args.epochs + 1):
+            self.model.train()  # <-- ADD THIS LINE
             pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.args.epochs}")
             running_loss = 0.0
 
@@ -103,10 +106,15 @@ class BertTrainer:
                 if val_metrics.get("f1_macro", -1.0) > best_f1:
                     best_f1 = val_metrics["f1_macro"]
                     patience_left = self.args.patience
-                    if output_dir:
-                        os.makedirs(output_dir, exist_ok=True)
-                        best_path = os.path.join(output_dir, "best_model.pt")
-                        torch.save(self.model.state_dict(), best_path)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                    best_path = os.path.join(output_dir, "best_model.pt")
+                    torch.save(self.model.state_dict(), best_path)
+
+                    # Save HF-style snapshot for easy reload/deployment
+                    save_dir = os.path.join(output_dir, "best_hf")
+                    self.model.save_pretrained(save_dir)
+                    self.tokenizer.save_pretrained(save_dir)
                 else:
                     patience_left -= 1
                     if patience_left <= 0:
@@ -161,7 +169,9 @@ class BertTrainer:
         # Confusion matrix plot
         import matplotlib.pyplot as plt
         import numpy as np
-        cm = confusion_matrix(trues, preds)
+        #cm = confusion_matrix(trues, preds)
+        labels_idx = list(range(len(label_names))) if label_names else None
+        cm = confusion_matrix(trues, preds, labels=labels_idx)
         fig, ax = plt.subplots(figsize=(6, 5))
         im = ax.imshow(cm)
         ax.set_title("Confusion Matrix")
