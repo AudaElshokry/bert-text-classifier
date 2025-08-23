@@ -80,6 +80,7 @@ class BertTrainer:
         best_f1 = -1.0
         patience_left = self.args.patience
         best_path = None
+        history = []  # NEW: per-epoch loss log for plotting later
 
         for epoch in range(1, self.args.epochs + 1):
             self.model.train()  # ensure train mode each epoch
@@ -108,6 +109,16 @@ class BertTrainer:
             if self.val_ds is not None:
                 val_metrics, _, _ = self.eval(self.val_ds)
                 tqdm.write(f"[val] {val_metrics}")
+
+                # NEW: record losses and write to disk
+                avg_train_loss = running_loss / max(1, len(train_loader))
+                history.append({"epoch": epoch, "train_loss": avg_train_loss, "val_loss": val_metrics.get("loss")})
+
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                    import json
+                    with open(os.path.join(output_dir, "history.json"), "w", encoding="utf-8") as f:
+                        json.dump(history, f, ensure_ascii=False, indent=2)
 
                 current_f1 = val_metrics.get("f1_macro", -1.0)
                 improved = current_f1 > best_f1
