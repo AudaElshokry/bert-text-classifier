@@ -123,9 +123,16 @@ class BertTrainer:
                 current_f1 = val_metrics.get("f1_macro", -1.0)
                 improved = current_f1 > best_f1
 
+                prev_best = best_f1  # for clear printing
+
+                # --- Early Stopping diagnostics (NEW) ---
+                tqdm.write(
+                    f"[ES] check: monitor=f1_macro (max), curr={current_f1:.6f}, best={prev_best:.6f}, patience={patience_left}")
+
                 if improved:
                     best_f1 = current_f1
                     patience_left = self.args.patience
+                    tqdm.write(f"[ES] improved: {prev_best:.6f} → {best_f1:.6f}; patience reset to {patience_left}")
 
                     if output_dir:
                         os.makedirs(output_dir, exist_ok=True)
@@ -139,8 +146,10 @@ class BertTrainer:
                         self.tokenizer.save_pretrained(save_dir)
                 else:
                     patience_left -= 1
+                    tqdm.write(
+                        f"[ES] no improvement (curr={current_f1:.6f}, best={prev_best:.6f}); patience={patience_left}")
                     if patience_left <= 0:
-                        tqdm.write("Early stopping triggered.")
+                        tqdm.write("[ES] Early stopping triggered.")
                         break
 
         # Load best model if we saved one
