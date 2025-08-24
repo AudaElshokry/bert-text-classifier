@@ -1,4 +1,4 @@
-# train.py
+#train.py
 import argparse
 import os
 import json
@@ -49,11 +49,11 @@ def build_argparser():
         help="Number of steps to accumulate gradients before optimizer step"
     )
     ap.add_argument(
-        "--eval_steps", type:int, default=None,
+        "--eval_steps", type=int, default=None,
         help="Evaluate every N optimizer steps (default: end of epoch)"
     )
     ap.add_argument(
-        "--save_steps", type:int, default=None,
+        "--save_steps", type=int, default=None,
         help="Save checkpoint every N optimizer steps"
     )
     ap.add_argument("--resume_from", default=None, help="Path to checkpoint-*/checkpoint.pt (optional)")
