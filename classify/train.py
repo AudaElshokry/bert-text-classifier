@@ -1,5 +1,4 @@
 # train.py
-# train.py
 import argparse
 import os
 import json
