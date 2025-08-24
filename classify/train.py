@@ -105,6 +105,20 @@ def main(args=None):
         patience=args.patience,
         fp16=getattr(args, "fp16", False),
     )
+    # ADD CLASS WEIGHTS EXTRACTION
+    class_weights = getattr(args, "class_weights", None)
+
+    trainer = BertTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_ds=train_ds,
+        val_ds=val_ds,
+        test_ds=test_ds,
+        args=targs,
+        label_names=[id2label[i] for i in range(num_labels)],
+        class_weights=class_weights  # ADD THIS
+    )
+    
     trainer = BertTrainer(
         model=model,
         tokenizer=tokenizer,

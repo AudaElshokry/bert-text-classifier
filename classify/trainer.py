@@ -1,4 +1,4 @@
-# trainer.py
+# classify/trainer.py
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
 import os
@@ -28,14 +28,15 @@ class TrainArgs:
 
 class BertTrainer:
     def __init__(
-        self,
-        model,
-        tokenizer,
-        train_ds,
-        val_ds=None,
-        test_ds=None,
-        args: Optional[TrainArgs] = None,
-        label_names: Optional[List[str]] = None,
+            self,
+            model,
+            tokenizer,
+            train_ds,
+            val_ds=None,
+            test_ds=None,
+            args: Optional[TrainArgs] = None,
+            label_names: Optional[List[str]] = None,
+            class_weights: Optional[List[float]] = None  # ADD THIS PARAMETER
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -44,6 +45,15 @@ class BertTrainer:
         self.test_ds = test_ds
         self.args = args or TrainArgs()
         self.label_names = label_names
+
+        # ADD CLASS WEIGHTS SUPPORT
+        self.class_weights = class_weights
+        if class_weights is not None:
+            self.class_weights_tensor = torch.tensor(class_weights,
+                                                     dtype=torch.float32,
+                                                     device=self.device)
+        else:
+            self.class_weights_tensor = None
 
         self.device = self.args.device
         self.model.to(self.device)
@@ -93,6 +103,12 @@ class BertTrainer:
                 with torch.amp.autocast("cuda", enabled=self.args.fp16):
                     out = self.model(**batch)
                     loss = out.loss
+                        
+                    # ADD CLASS WEIGHTS CALCULATION
+                    if self.class_weights_tensor is not None:
+                        labels = batch['labels']
+                        weights = self.class_weights_tensor[labels]
+                        loss = (loss * weights).mean()
 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
