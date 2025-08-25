@@ -20,6 +20,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 
+def _ensure_defaults(ns):
+    defaults = dict(
+        dropout_rate=None,
+        freeze_layers=None,
+        gpus=None,
+        resume_from=None,
+        grad_accum_steps=1,
+    )
+    for k, v in defaults.items():
+        if not hasattr(ns, k):
+            setattr(ns, k, v)
+    return ns
 
 @dataclass
 class TrainArgs:
@@ -60,6 +72,7 @@ class BertTrainer:
         self.val_ds = val_ds
         self.test_ds = test_ds
         self.args = args or TrainArgs()
+        self.args = _ensure_defaults(self.args)
         self.label_names = label_names
 
         # device must be set before any tensor uses it

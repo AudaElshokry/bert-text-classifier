@@ -4,8 +4,8 @@ import os
 import json
 import time
 import torch
-from transformers import AutoTokenizer
 
+from transformers import AutoTokenizer
 from classify.data import TextDataset
 from classify.model import build_model
 from classify.trainer import BertTrainer, TrainArgs
@@ -17,6 +17,24 @@ from classify.utils import (
     save_label_map,
 )
 
+# ---- BEGIN compat defaults shim ----
+def _ensure_defaults(ns):
+    """Guarantee our newer flags exist even if not passed."""
+    defaults = dict(
+        dropout_rate=None,    # float|None
+        freeze_layers=None,   # int|None  (-1 means freeze all)
+        gpus=None,            # str|list|None
+        resume_from=None,     # str|None
+        grad_accum_steps=1,   # int (legacy name, trainer may still read it)
+    )
+    for k, v in defaults.items():
+        if not hasattr(ns, k):
+            setattr(ns, k, v)
+    # Also mirror gradient_accumulation_steps into legacy name if present
+    if hasattr(ns, "gradient_accumulation_steps") and not hasattr(ns, "grad_accum_steps"):
+        setattr(ns, "grad_accum_steps", getattr(ns, "gradient_accumulation_steps"))
+    return ns
+# ---- END compat defaults shim ----
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Train a BERT text classifier on CSV (text,label)")
@@ -33,8 +51,10 @@ def build_argparser():
     ap.add_argument("--warmup_ratio", type=float, default=0.0)
     ap.add_argument("--max_len", type=int, default=256)
 
+    # New(er) knobs
     ap.add_argument("--dropout_rate", type=float, default=None)
     ap.add_argument("--freeze_layers", type=int, default=None)
+
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--grad_clip", type=float, default=1.0)
@@ -64,12 +84,7 @@ def build_argparser():
 
 
 def _coerce_args(args):
-    """
-    Accept:
-      - None  -> parse from CLI
-      - dict  -> convert to argparse.Namespace
-      - Namespace -> use as-is
-    """
+    """Accept None|dict|Namespace."""
     if args is None:
         return build_argparser().parse_args()
     if isinstance(args, dict):
@@ -82,11 +97,17 @@ def _coerce_args(args):
 def main(args=None):
     # ---------------- parse args ----------------
     args = _coerce_args(args)
+    # 🔒 Ensure compatibility defaults so AttributeError can never happen
+    args = _ensure_defaults(args)
 
     # ---------------- GPU visibility (set first) ----------------
     # Set CUDA_VISIBLE_DEVICES before any torch.cuda.* queries
     if getattr(args, "gpus", None) is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in args.gpus)
+        # Support both list[int] and single int/str
+        if isinstance(args.gpus, (list, tuple)):
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in args.gpus)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpus)
 
     # ---------------- housekeeping ----------------
     seed_everything(args.seed)
@@ -123,8 +144,8 @@ def main(args=None):
         num_labels=num_labels,
         id2label={i: id2label[i] for i in range(num_labels)},
         label2id=label2id,
-        dropout_rate=args.dropout_rate,
-        freeze_layers=args.freeze_layers,
+        dropout_rate=getattr(args, "dropout_rate", None),
+        freeze_layers=getattr(args, "freeze_layers", None),
     )
 
     # ---------------- optional: auto class weights ----------------
