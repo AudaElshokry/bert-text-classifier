@@ -228,9 +228,13 @@ class BertTrainer:
             # ---- Validation & Early Stopping ----
             if self.val_ds is not None:
                 val_metrics, _, _ = self.eval(self.val_ds, return_per_class=True)
-                tqdm.write(
-                    f"[val] {{k: {round(v, 6) if isinstance(v, float) else v} for k, v in val_metrics.items() if k != 'per_class'}}"
-                )
+
+                # build a clean, rounded dict (skip bulky per_class)
+                filtered_metrics = {
+                    k: (round(float(v), 6) if isinstance(v, numbers.Real) else v)
+                    for k, v in val_metrics.items() if k != "per_class"
+                }
+                tqdm.write(f"[val] {filtered_metrics}")
 
                 # Record epoch metrics
                 avg_train_loss = running_loss / max(1, len(train_loader))
