@@ -56,6 +56,10 @@ def build_model(
     if dropout_rate is not None:
         model_config["classifier_dropout"] = dropout_rate
         model_config["hidden_dropout_prob"] = dropout_rate
+        # also set attention/dropout fields across arch types
+        model_config["attention_probs_dropout_prob"] = dropout_rate
+        model_config["dropout"] = dropout_rate  # DistilBERT
+        model_config["attention_dropout"] = dropout_rate  # DistilBERT
 
     # Load the model
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -66,16 +70,23 @@ def build_model(
         **{**model_config, **kwargs}
     )
 
-    # Freeze layers if requested
-    if freeze_layers is not None and freeze_layers > 0:
-        _freeze_model_layers(model, freeze_layers)
+    # Freeze embeddings if requested to freeze > 0 layers
+    # (Optional improvement: expose a separate flag for embeddings)
+    if (freeze_layers is not None) and (freeze_layers >= 0):
+        _freeze_layers(model, freeze_layers)
 
     return model
 
 
-def _freeze_model_layers(model, num_layers: int):
-    """Freeze the first n layers of the transformer model."""
-    # Handle different architectures
+def _freeze_layers(model, num_layers: int):
+    """Freeze the first `num_layers` encoder layers if possible."""
+    if num_layers is None or num_layers <= 0:
+        return
+
+    # Freeze embeddings too (often stabilizes small-data training)
+    for param in model.get_input_embeddings().parameters():
+        param.requires_grad = False
+
     if hasattr(model, 'bert') and hasattr(model.bert, 'encoder'):
         # BERT architecture
         for i, layer in enumerate(model.bert.encoder.layer):
@@ -95,15 +106,7 @@ def _freeze_model_layers(model, num_layers: int):
 
 
 def get_model_info(model) -> Dict[str, Any]:
-    """
-    Returns comprehensive model information for research reporting.
-
-    Args:
-        model: A PyTorch model instance
-
-    Returns:
-        Dictionary containing model statistics and metadata
-    """
+    """Return comprehensive model information for research reporting."""
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 

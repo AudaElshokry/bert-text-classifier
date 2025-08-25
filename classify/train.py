@@ -32,12 +32,15 @@ def build_argparser():
     ap.add_argument("--weight_decay", type=float, default=0.0)
     ap.add_argument("--warmup_ratio", type=float, default=0.0)
     ap.add_argument("--max_len", type=int, default=256)
+
+    ap.add_argument("--dropout_rate", type=float, default=None)
+    ap.add_argument("--freeze_layers", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--grad_clip", type=float, default=1.0)
     ap.add_argument("--patience", type=int, default=2)
     ap.add_argument("--fp16", action="store_true", help="Use mixed precision training")
-    ap.add_argument("--gpus", type=int, nargs="*", default=[0], help="Visible GPU IDs, e.g., --gpus 0 1")
+    ap.add_argument("--gpus", type=int, nargs="*", default=None, help="Visible GPU IDs, e.g., --gpus 0 1")
 
     # Research/quality-of-life features
     ap.add_argument(
@@ -120,6 +123,8 @@ def main(args=None):
         num_labels=num_labels,
         id2label={i: id2label[i] for i in range(num_labels)},
         label2id=label2id,
+        dropout_rate=args.dropout_rate,
+        freeze_layers=args.freeze_layers,
     )
 
     # ---------------- optional: auto class weights ----------------
@@ -188,6 +193,8 @@ def main(args=None):
         "seed": args.seed,
         "fp16": bool(getattr(args, "fp16", False)),
         "gpus": getattr(args, "gpus", None),
+        "dropout_rate": getattr(args, "dropout_rate", None),
+        "freeze_layers": getattr(args, "freeze_layers", None),
         "gradient_accumulation_steps": getattr(args, "gradient_accumulation_steps", 1),
         "eval_steps": getattr(args, "eval_steps", None),
         "save_steps": getattr(args, "save_steps", None),

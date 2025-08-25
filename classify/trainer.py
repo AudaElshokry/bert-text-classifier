@@ -18,6 +18,7 @@ from tqdm.auto import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 
 
 @dataclass
@@ -119,6 +120,20 @@ class BertTrainer:
         scaler = torch.amp.GradScaler("cuda", enabled=self.args.fp16)
 
         # keep refs for checkpointing
+
+        # ---- Resume support ----
+        start_epoch = 1
+        global_step = 0
+        if hasattr(self.args, 'resume_from') and self.args.resume_from:
+            try:
+                global_step = self.load_checkpoint(self.args.resume_from)
+                steps_per_epoch = max(1, math.ceil(len(train_loader) / max(1, self.args.gradient_accumulation_steps)))
+                start_epoch = (global_step // steps_per_epoch) + 1
+                tqdm.write(f"🔄 Resuming from epoch {start_epoch}, global_step {global_step}")
+            except Exception as e:
+                tqdm.write(f"⚠️ Failed to resume from checkpoint: {e}")
+                global_step = 0
+                start_epoch = 1
         self._optimizer, self._scheduler, self._scaler = optimizer, scheduler, scaler
 
         best_f1 = -1.0
@@ -134,7 +149,7 @@ class BertTrainer:
                 with open(os.path.join(output_dir, "labels.json"), "w", encoding="utf-8") as f:
                     json.dump(self.label_names, f, ensure_ascii=False, indent=2)
 
-        for epoch in range(1, self.args.epochs + 1):
+        for epoch in range(start_epoch, self.args.epochs + 1):
             self.model.train()
             pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.args.epochs}")
             running_loss = 0.0
@@ -146,7 +161,7 @@ class BertTrainer:
                 batch_on_device = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in batch.items()}
 
                 with torch.amp.autocast("cuda", enabled=self.args.fp16):
-                    out = self.model(**{k: v for k, v in batch_on_device.items() if k != "text"})
+                    out = self.model(**{k: v for k, v in batch_on_device.items() if k not in ("text", "texts")})
 
                     # Custom loss with class weights if requested
                     if self.loss_fn is not None:
@@ -271,25 +286,61 @@ class BertTrainer:
 
         tqdm.write(f"[Step {global_step}] val_metrics: {val_metrics}")
 
+    
     def _save_checkpoint(self, global_step: int, output_dir: str, optimizer: optim.Optimizer,
-                         scheduler=None, scaler=None):
-        """Save training checkpoint."""
-        checkpoint_dir = os.path.join(output_dir, f"checkpoint-{global_step}")
+                         scheduler=None, scaler=None, is_best: bool = False):
+        """Save training checkpoint with optional best-model flag."""
+        checkpoint_dir = os.path.join(output_dir, "best_checkpoint" if is_best else f"checkpoint-{global_step}")
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         to_save = {
             'global_step': global_step,
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,
+            'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+            'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+            'train_args': vars(self.args) if hasattr(self.args, '__dict__') else str(self.args),
+            'timestamp': time.time(),
+            'is_best': is_best,
+            'best_metric': getattr(self, 'best_f1', None) if hasattr(self, 'best_f1') else None,
+            'bad_epochs': getattr(self, 'bad_epochs', None) if hasattr(self, 'bad_epochs') else None,
         }
-        if scheduler is not None:
-            to_save['scheduler_state_dict'] = scheduler.state_dict()
-        if scaler is not None:
-            to_save['scaler_state_dict'] = scaler.state_dict()
 
         torch.save(to_save, os.path.join(checkpoint_dir, "checkpoint.pt"))
-        self.tokenizer.save_pretrained(checkpoint_dir)
-        print(f"Checkpoint saved at step {global_step} -> {checkpoint_dir}")
+        # Save tokenizer if available
+        tok = getattr(self, 'tokenizer', None)
+        if tok is not None:
+            tok.save_pretrained(checkpoint_dir)
+        print(("🏆 Best checkpoint" if is_best else "💾 Checkpoint" ) + f" saved at step {global_step} -> {checkpoint_dir}")
+
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load model/optimizer/scheduler/scaler states from a checkpoint file or directory."""
+        if os.path.isdir(checkpoint_path):
+            ckpt_file = os.path.join(checkpoint_path, 'checkpoint.pt')
+        else:
+            ckpt_file = checkpoint_path
+        if not os.path.exists(ckpt_file):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        ckpt = torch.load(ckpt_file, map_location=self.device)
+
+        self.model.load_state_dict(ckpt['model_state_dict'])
+
+        if hasattr(self, '_optimizer') and ckpt.get('optimizer_state_dict') is not None:
+            self._optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        if hasattr(self, '_scheduler') and ckpt.get('scheduler_state_dict') is not None:
+            self._scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        if hasattr(self, '_scaler') and ckpt.get('scaler_state_dict') is not None:
+            try:
+                self._scaler.load_state_dict(ckpt['scaler_state_dict'])
+            except Exception:
+                pass
+
+        self.best_f1 = ckpt.get('best_metric', getattr(self, 'best_f1', None))
+        self.bad_epochs = ckpt.get('bad_epochs', getattr(self, 'bad_epochs', 0))
+
+        global_step = ckpt.get('global_step', 0)
+        tqdm.write(f"✅ Loaded checkpoint from step {global_step}")
+        return global_step
 
     @torch.no_grad()
     def eval(self, dataset, return_per_class: bool = False) -> Tuple[Dict[str, float], List[int], List[int]]:
@@ -297,11 +348,12 @@ class BertTrainer:
         self.model.eval()
         loader = self._loader(dataset, shuffle=False)
         preds, trues = [], []
+        probs_all = []
         total_loss = 0.0
 
         for batch in tqdm(loader, desc="Evaluating", leave=False):
             batch_on_device = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in batch.items()}
-            out = self.model(**{k: v for k, v in batch_on_device.items() if k != "text"})
+            out = self.model(**{k: v for k, v in batch_on_device.items() if k not in ("text", "texts")})
 
             # Keep loss consistent with training if class weights used
             if self.loss_fn is not None:
@@ -320,10 +372,31 @@ class BertTrainer:
             "loss": avg_loss,
             "accuracy": accuracy_score(trues, preds),
             "f1_macro": f1_score(trues, preds, average="macro"),
+            "f1_micro": f1_score(trues, preds, average="micro"),
             "f1_weighted": f1_score(trues, preds, average="weighted"),
             "precision_macro": precision_score(trues, preds, average="macro", zero_division=0),
             "recall_macro": recall_score(trues, preds, average="macro", zero_division=0),
         }
+
+        # AUC (binary only)
+        if len(set(trues)) == 2:
+            try:
+                probs_all = np.array(probs_all) if 'probs_all' in locals() else None
+                if probs_all is None:
+                    # recompute quickly
+                    loader_auc = self._loader(dataset, shuffle=False)
+                    probs_all = []
+                    for batch in loader_auc:
+                        batch = {k: (v.to(self.device) if hasattr(v, 'to') else v) for k, v in batch.items()}
+                        out = self.model(**{k: v for k, v in batch.items() if k not in ("text","texts","labels")})
+                        p = torch.softmax(out.logits, dim=-1).cpu().numpy()
+                        probs_all.append(p)
+                    probs_all = np.concatenate(probs_all, axis=0)
+                # positive class is 1 assuming label ids 0..1
+                from sklearn.metrics import roc_auc_score
+                metrics["auc_roc"] = float(roc_auc_score(trues, probs_all[:, 1]))
+            except Exception as e:
+                metrics["auc_roc"] = f"Error: {e}"
 
         if return_per_class and self.label_names:
             precision, recall, f1, support = precision_recall_fscore_support(
@@ -361,7 +434,7 @@ class BertTrainer:
 
         for batch in tqdm(loader, desc="Predicting with confidence"):
             batch_on_device = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in batch.items()}
-            out = self.model(**{k: v for k, v in batch_on_device.items() if k != "text"})
+            out = self.model(**{k: v for k, v in batch_on_device.items() if k not in ("text", "texts")})
             probs = torch.softmax(out.logits, dim=-1)
             preds = out.logits.argmax(-1)
 
@@ -369,8 +442,11 @@ class BertTrainer:
             all_preds.extend(preds.cpu().tolist())
             all_trues.extend(batch_on_device["labels"].cpu().tolist())
 
-            if "text" in batch_on_device:
-                maybe_texts.extend(list(batch_on_device["text"]))
+            texts = batch.get("texts") if isinstance(batch, dict) else None
+            if texts is None and "texts" in batch_on_device:
+                texts = batch_on_device["texts"]
+            if texts is not None:
+                maybe_texts.extend(list(texts))
 
         results_df = pd.DataFrame({
             "true_label": all_trues,

@@ -13,29 +13,22 @@ class TextDataset(Dataset):
     Features:
     - Vectorized tokenization in collate_fn for efficiency
     - Automatic padding and truncation
-    - Hugging Face tokenizer compatibility
-    - Type safety and validation
-
-    Args:
-        texts: List of text samples
-        labels: List of corresponding integer labels
-        tokenizer: Hugging Face tokenizer instance
-        max_len: Maximum sequence length for tokenization
-        padding: Padding strategy (True, 'longest', 'max_length', etc.)
-        truncation: Whether to truncate sequences
+    - Optional text passthrough in batches for error analysis
+    - Dataset statistics helper (get_stats) for research reporting
     """
 
-    def __init__(self, texts: List[str], labels: List[int], tokenizer,
-                 max_len: int = 256, padding: bool = True, truncation: bool = True):
-        # Validation
-        if len(texts) != len(labels):
-            raise ValueError(f"Texts and labels must have same length. "
-                             f"Got {len(texts)} texts and {len(labels)} labels.")
-        if not texts:
-            raise ValueError("Texts list cannot be empty.")
-
-        self.texts = list(map(str, texts))
-        self.labels = list(map(int, labels))
+    def __init__(
+        self,
+        texts: List[str],
+        labels: List[int],
+        tokenizer,
+        max_len: int = 256,
+        padding: bool = True,
+        truncation: bool = True,
+    ):
+        assert len(texts) == len(labels), "Texts and labels must have the same length"
+        self.texts = texts
+        self.labels = labels
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.padding = padding
@@ -64,6 +57,7 @@ class TextDataset(Dataset):
             enc["attention_mask"] = enc["attention_mask"].long()
 
         enc["labels"] = labels
+        enc["texts"] = texts  # pass-through for analysis
         return enc
 
     def get_stats(self) -> Dict[str, Any]:
@@ -74,26 +68,36 @@ class TextDataset(Dataset):
         return {
             "num_samples": len(self),
             "num_classes": len(unique_labels),
-            "class_distribution": dict(zip(unique_labels.tolist(), counts.tolist())),
-            "avg_text_length": float(np.mean(text_lengths)),
-            "max_text_length": int(np.max(text_lengths)),
-            "min_text_length": int(np.min(text_lengths)),
-            "text_length_std": float(np.std(text_lengths)),
+            "label_counts": {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts)},
+            "avg_text_length": float(np.mean(text_lengths)) if text_lengths else 0.0,
+            "max_text_length": int(np.max(text_lengths)) if text_lengths else 0,
+            "p95_text_length": float(np.percentile(text_lengths, 95)) if text_lengths else 0.0,
         }
 
-    def show_samples(self, indices: Optional[List[int]] = None, n: int = 5) -> pd.DataFrame:
-        """Display sample texts with labels for debugging and analysis."""
-        if indices is None:
-            indices = range(min(n, len(self)))
 
-        samples = []
-        for i in indices:
-            sample = self[i]
-            samples.append({
-                "index": i,
-                "text": sample["text"][:100] + "..." if len(sample["text"]) > 100 else sample["text"],
-                "label": sample["label"],
-                "text_length": len(sample["text"])
-            })
+def build_datasets(
+    train_texts: List[str],
+    train_labels: List[int],
+    val_texts: Optional[List[str]],
+    val_labels: Optional[List[int]],
+    test_texts: Optional[List[str]],
+    test_labels: Optional[List[int]],
+    tokenizer,
+    max_len: int = 256,
+):
+    """Convenience builder returning train/val/test datasets with the same tokenizer settings."""
+    train_ds = TextDataset(train_texts, train_labels, tokenizer, max_len=max_len)
+    val_ds = TextDataset(val_texts, val_labels, tokenizer, max_len=max_len) if val_texts is not None else None
+    test_ds = TextDataset(test_texts, test_labels, tokenizer, max_len=max_len) if test_texts is not None else None
+    return train_ds, val_ds, test_ds
 
-        return pd.DataFrame(samples)
+
+def read_csv_dataset(path: str) -> pd.DataFrame:
+    """Read a CSV with required columns 'text' and 'label'. Useful for quick checks."""
+    df = pd.read_csv(path)
+    required_columns = {"text", "label"}
+    if not required_columns.issubset(df.columns):
+        missing = required_columns - set(df.columns)
+        raise ValueError(f"CSV missing required columns: {missing}")
+
+    return df
