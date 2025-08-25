@@ -12,13 +12,27 @@ from transformers import get_linear_schedule_with_warmup
 import torch.optim as optim
 from sklearn.metrics import (
     accuracy_score, f1_score, classification_report, confusion_matrix,
-    precision_score, recall_score, precision_recall_fscore_support
+    precision_score, recall_score, precision_recall_fscore_support, roc_auc_score
 )
 from tqdm.auto import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import math
+import numbers
+
+def _fmt_metrics(metrics: dict, exclude=("per_class",), ndigits: int = 6) -> dict:
+    """Round numeric metrics for pretty logging; drop noisy fields."""
+    out = {}
+    for k, val in metrics.items():
+        if k in exclude:
+            continue
+        if isinstance(val, numbers.Real):
+            out[k] = round(float(val), ndigits)
+        else:
+            out[k] = val
+    return out
+
 
 def _ensure_defaults(ns):
     defaults = dict(
@@ -297,9 +311,8 @@ class BertTrainer:
             with open(history_path, "w") as f:
                 json.dump(history, f, indent=2)
 
-        tqdm.write(f"[Step {global_step}] val_metrics: {val_metrics}")
+        tqdm.write(f"[Step {global_step}] val_metrics: {_fmt_metrics(val_metrics)}")
 
-    
     def _save_checkpoint(self, global_step: int, output_dir: str, optimizer: optim.Optimizer,
                          scheduler=None, scaler=None, is_best: bool = False):
         """Save training checkpoint with optional best-model flag."""
@@ -357,29 +370,38 @@ class BertTrainer:
 
     @torch.no_grad()
     def eval(self, dataset, return_per_class: bool = False) -> Tuple[Dict[str, float], List[int], List[int]]:
-        """Enhanced evaluation with per-class metrics for research."""
+        """Enhanced evaluation with robust AUC computation."""
         self.model.eval()
         loader = self._loader(dataset, shuffle=False)
-        preds, trues = [], []
-        probs_all = []
-        total_loss = 0.0
+
+        losses, preds, trues = [], [], []
+        pos_probs = []  # only used for binary AUC
 
         for batch in tqdm(loader, desc="Evaluating", leave=False):
-            batch_on_device = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in batch.items()}
-            out = self.model(**{k: v for k, v in batch_on_device.items() if k not in ("text", "texts")})
+            # Exclude labels/texts from forward; keep labels for metrics
+            labels = batch.get("labels")
+            to_model = {k: v.to(self.device) for k, v in batch.items()
+                        if k not in ("labels", "texts", "text")}
 
-            # Keep loss consistent with training if class weights used
-            if self.loss_fn is not None:
-                loss = self.loss_fn(out.logits, batch_on_device["labels"])
-            else:
-                loss = out.loss
+            out = self.model(**to_model)
+            logits = out.logits
 
-            total_loss += float(loss.detach())
-            yhat = out.logits.argmax(-1)
-            preds.extend(yhat.cpu().tolist())
-            trues.extend(batch_on_device["labels"].cpu().tolist())
+            # Optional: unweighted CE eval loss
+            if labels is not None:
+                loss = torch.nn.functional.cross_entropy(logits, labels.to(self.device), reduction="mean")
+                losses.append(loss.item())
+                trues.extend(labels.detach().cpu().tolist())
 
-        avg_loss = total_loss / max(1, len(loader))
+            # Predictions
+            pred = logits.argmax(dim=-1)
+            preds.extend(pred.detach().cpu().tolist())
+
+            # Positive-class probs for binary AUC (class id 1)
+            probs = torch.softmax(logits, dim=-1)  # (B, C)
+            pos_probs.extend(probs[:, 1].detach().cpu().tolist())
+
+        # ---- compute metrics ----
+        avg_loss = float(np.mean(losses)) if losses else 0.0
 
         metrics = {
             "loss": avg_loss,
@@ -391,40 +413,33 @@ class BertTrainer:
             "recall_macro": recall_score(trues, preds, average="macro", zero_division=0),
         }
 
-        # AUC (binary only)
+        # ---- robust binary AUC ----
         if len(set(trues)) == 2:
             try:
-                probs_all = np.array(probs_all) if 'probs_all' in locals() else None
-                if probs_all is None:
-                    # recompute quickly
-                    loader_auc = self._loader(dataset, shuffle=False)
-                    probs_all = []
-                    for batch in loader_auc:
-                        batch = {k: (v.to(self.device) if hasattr(v, 'to') else v) for k, v in batch.items()}
-                        out = self.model(**{k: v for k, v in batch.items() if k not in ("text","texts","labels")})
-                        p = torch.softmax(out.logits, dim=-1).cpu().numpy()
-                        probs_all.append(p)
-                    probs_all = np.concatenate(probs_all, axis=0)
-                # positive class is 1 assuming label ids 0..1
-                from sklearn.metrics import roc_auc_score
-                metrics["auc_roc"] = float(roc_auc_score(trues, probs_all[:, 1]))
+                if len(pos_probs) == len(trues):
+                    metrics["auc_roc"] = float(roc_auc_score(trues, pos_probs))
+                else:
+                    metrics["auc_roc"] = f"Length mismatch: {len(pos_probs)} vs {len(trues)}"
             except Exception as e:
-                metrics["auc_roc"] = f"Error: {e}"
+                metrics["auc_roc"] = f"Error: {str(e)[:100]}..."
 
+        # Per-class metrics for research analysis
         if return_per_class and self.label_names:
             precision, recall, f1, support = precision_recall_fscore_support(
                 trues, preds, labels=range(len(self.label_names)), zero_division=0
             )
-            metrics["per_class"] = {}
-            for i, name in enumerate(self.label_names):
-                metrics["per_class"][name] = {
+            metrics["per_class"] = {
+                self.label_names[i]: {
                     "precision": float(precision[i]),
                     "recall": float(recall[i]),
                     "f1": float(f1[i]),
-                    "support": int(support[i])
+                    "support": int(support[i]),
                 }
+                for i in range(len(self.label_names))
+            }
 
-        return metrics, trues, preds
+        # Return order: (metrics, preds, trues) — keep this consistent with call sites
+        return metrics, preds, trues
 
     @torch.no_grad()
     def save_predictions(self, dataset, path_csv: str):
