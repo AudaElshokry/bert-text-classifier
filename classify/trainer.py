@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 import numbers
+import multiprocessing as mp
 
 def _fmt_metrics(metrics: dict, exclude=("per_class",), ndigits: int = 6) -> dict:
     """Round numeric metrics for pretty logging; drop noisy fields."""
