@@ -109,13 +109,42 @@ def main(args=None):
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpus)
 
+        print(f"✅ Set CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
+
+    # CRITICAL: Force PyTorch to re-initialize CUDA context after setting visible devices
+    # This ensures the new device visibility is respected
+    if 'CUDA_VISIBLE_DEVICES' in os.environ and torch.cuda.is_available():
+        # Clear any existing CUDA context
+        torch.cuda.empty_cache()
+        # Re-check available devices
+        available_gpus = torch.cuda.device_count()
+        print(f"📊 Available GPUs after setting visibility: {available_gpus}")
+
+        if available_gpus == 0:
+            print("⚠️  Warning: No GPUs available after setting CUDA_VISIBLE_DEVICES")
+            # Fall back to CPU
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            if hasattr(args, 'device'):
+                args.device = 'cpu'
+        else:
+            # Validate that the requested GPUs are actually available
+            requested_gpus = os.environ['CUDA_VISIBLE_DEVICES'].split(',')
+            if len(requested_gpus) > available_gpus:
+                print(f"⚠️  Warning: Requested {len(requested_gpus)} GPUs but only {available_gpus} available")
+                # Adjust to available count
+                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(available_gpus))
+
     # ---------------- housekeeping ----------------
     seed_everything(args.seed)
     os.makedirs(args.output_path, exist_ok=True)
 
     print("🔧 Setting up experiment...")
+    print(f"💻 Final device setup: {torch.cuda.device_count()} GPUs available")
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
 
-    # ---------------- load data ----------------
+        # ---------------- load data ----------------
     train_df = read_csv_required(args.train_path)
     val_df   = read_csv_required(args.val_path)
     test_df  = read_csv_required(args.test_path)

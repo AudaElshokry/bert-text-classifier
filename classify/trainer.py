@@ -68,15 +68,15 @@ class TrainArgs:
 
 class BertTrainer:
     def __init__(
-        self,
-        model,
-        tokenizer,
-        train_ds,
-        val_ds=None,
-        test_ds=None,
-        args: Optional[TrainArgs] = None,
-        label_names: Optional[List[str]] = None,
-        class_weights: Optional[List[float]] = None
+            self,
+            model,
+            tokenizer,
+            train_ds,
+            val_ds=None,
+            test_ds=None,
+            args: Optional[TrainArgs] = None,
+            label_names: Optional[List[str]] = None,
+            class_weights: Optional[List[float]] = None
     ):
         """
         BERT Trainer for text classification with research-grade features.
@@ -90,8 +90,17 @@ class BertTrainer:
         self.args = _ensure_defaults(self.args)
         self.label_names = label_names
 
-        # device must be set before any tensor uses it
-        self.device = self.args.device
+        # FIXED: Determine device dynamically at runtime
+        if hasattr(self.args, 'device') and self.args.device:
+            # Use the device from args if explicitly set
+            self.device = torch.device(self.args.device)
+        else:
+            # Determine device dynamically
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # Update the args for consistency
+            self.args.device = str(self.device)
+
+        # Move model to the correct device
         self.model.to(self.device)
 
         # Optional class-weighted loss
