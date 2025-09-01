@@ -28,6 +28,14 @@ def _ensure_defaults(ns):
         gpus=None,            # str|list|None
         resume_from=None,     # str|None
         grad_accum_steps=1,   # int (legacy name)
+        # ensure argparse-style defaults when args is a dict
+        num_workers = 2,
+        grad_clip = 1.0,
+        patience = 2,
+        fp16 = False,
+        gradient_accumulation_steps = 1,
+        eval_steps = None,
+        save_steps = None,
     )
     for k, v in defaults.items():
         if not hasattr(ns, k):
