@@ -172,6 +172,10 @@ def main(args=None):
         dropout_rate = getattr(args, "dropout_rate", None),
         freeze_layers=getattr(args, "freeze_layers", None),
     )
+    # --- PARAM COUNTS (after freezing is applied in build_model) ---
+    n_total = sum(p.numel() for p in model.parameters())
+    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"🧮 Parameters: total={n_total:,}  trainable={n_train:,}")
 
     # ---------------- class weights ----------------
     class_weights = getattr(args, "class_weights", None)
@@ -249,6 +253,9 @@ def main(args=None):
         },
         "output_path": args.output_path,
         "label2id": label2id,
+        # For Params count
+        "num_parameters": int(n_total),
+        "num_trainable_parameters": int(n_train),
     }
 
     # ---------------- train + time it ----------------
