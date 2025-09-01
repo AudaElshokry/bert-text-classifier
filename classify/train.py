@@ -254,6 +254,17 @@ def main(args=None):
     # ---------------- train + time it ----------------
     train_start = time.time()
     best_f1 = trainer.train(output_dir=args.output_path)
+    # Persist best validation F1 for aggregators
+    best_metrics_path = os.path.join(args.output_path, "best_metrics.json")
+    with open(best_metrics_path, "w", encoding="utf-8") as f:
+        json.dump({"best_val_f1": float(best_f1), "f1_macro": float(best_f1)}, f, ensure_ascii=False, indent=2)
+
+    # Also record into experiment_config so it's in one place
+    # (this assumes 'experiment_config' dict exists in scope — in your file it does)
+    experiment_config["best_val_f1"] = float(best_f1)
+    with open(os.path.join(args.output_path, "experiment_config.json"), "w", encoding="utf-8") as f:
+        json.dump(experiment_config, f, ensure_ascii=False, indent=2)
+        
     train_end = time.time()
     training_time_seconds = train_end - train_start
     training_time_human = time.strftime("%H:%M:%S", time.gmtime(training_time_seconds))
