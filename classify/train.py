@@ -267,8 +267,8 @@ def main(args=None):
         json.dump({"best_val_f1": float(best_f1), "f1_macro": float(best_f1)}, f, ensure_ascii=False, indent=2)
 
     # Also record into experiment_config so it's in one place
-    # (this assumes 'experiment_config' dict exists in scope — in your file it does)
     experiment_config["best_val_f1"] = float(best_f1)
+    
     with open(os.path.join(args.output_path, "experiment_config.json"), "w", encoding="utf-8") as f:
         json.dump(experiment_config, f, ensure_ascii=False, indent=2)
         
