@@ -1,81 +1,61 @@
 # model.py
 from typing import Dict, Optional, Any
 from transformers import AutoModelForSequenceClassification, AutoConfig
-import torch
-
 
 def build_model(
-        model_name: str,
-        num_labels: int,
-        id2label: Optional[Dict[int, str]] = None,
-        label2id: Optional[Dict[str, int]] = None,
-        dropout_rate: Optional[float] = None,
-        freeze_layers: Optional[int] = None,
-        **kwargs
+    model_name: str,
+    num_labels: int,
+    id2label: Optional[Dict[int, str]] = None,
+    label2id: Optional[Dict[str, int]] = None,
+    dropout_rate: Optional[float] = None,
+    freeze_layers: Optional[int] = None,
+    **kwargs: Any,
 ):
     """
-    Builds a Hugging Face sequence classification model for fine-tuning.
-
-    This function provides a standardized way to initialize transformer models
-    for text classification tasks with proper label mapping for evaluation.
-
-    Args:
-        model_name: Hugging Face model identifier or path
-        num_labels: Number of output classes for classification
-        id2label: Mapping from label index to label name (for metrics)
-        label2id: Mapping from label name to label index (for encoding)
-        dropout_rate: Custom dropout rate for classifier and hidden layers
-        freeze_layers: Number of initial layers to freeze (0 = none, -1 = all)
-        **kwargs: Additional arguments passed to from_pretrained()
-
-    Returns:
-        A configured AutoModelForSequenceClassification instance
-
-    Examples:
-        >>> # Basic usage
-        >>> model = build_model("bert-base-uncased", 2)
-
-        >>> # With label mapping for better metrics
-        >>> model = build_model("bert-base-uncased", 2, 
-        ...                    {0: "negative", 1: "positive"},
-        ...                    {"negative": 0, "positive": 1})
-
-        >>> # With custom dropout and frozen layers
-        >>> model = build_model("bert-base-uncased", 2, 
-        ...                    dropout_rate=0.3, freeze_layers=8)
+    Build a Hugging Face sequence classification model with a proper config,
+    optional dropout overrides, and optional layer freezing.
     """
-
-    # Handle layer freezing (freeze all if -1)
-    if freeze_layers == -1:
-        # First load config to check number of layers
-        config = AutoConfig.from_pretrained(model_name)
-        freeze_layers = config.num_hidden_layers if hasattr(config, 'num_hidden_layers') else 0
-
-    # Configure model with custom dropout if specified
-    model_config = {}
-    if dropout_rate is not None:
-        model_config["classifier_dropout"] = dropout_rate
-        model_config["hidden_dropout_prob"] = dropout_rate
-        # also set attention/dropout fields across arch types
-        model_config["attention_probs_dropout_prob"] = dropout_rate
-        model_config["dropout"] = dropout_rate  # DistilBERT
-        model_config["attention_dropout"] = dropout_rate  # DistilBERT
-
-    # Load the model
-    model = AutoModelForSequenceClassification.from_pretrained(
+    # 1) Build a config with the correct label mapping
+    config = AutoConfig.from_pretrained(
         model_name,
         num_labels=num_labels,
         id2label=id2label,
         label2id=label2id,
-        **{**model_config, **kwargs}
     )
 
-    # Freeze embeddings if requested to freeze > 0 layers
-    # (Optional improvement: expose a separate flag for embeddings)
-    if (freeze_layers is not None) and (freeze_layers >= 0):
-        _freeze_layers(model, freeze_layers)
+    # 2) If a dropout is provided, override config fields (works across BERT/Distil/RoBERTa)
+    if dropout_rate is not None:
+        dr = float(dropout_rate)
+        if hasattr(config, "hidden_dropout_prob"):
+            config.hidden_dropout_prob = dr
+        if hasattr(config, "attention_probs_dropout_prob"):
+            config.attention_probs_dropout_prob = dr
+        # DistilBERT-style fields (exist only on certain configs)
+        if hasattr(config, "dropout"):
+            config.dropout = dr
+        if hasattr(config, "attention_dropout"):
+            config.attention_dropout = dr
+
+    # 3) Instantiate model with this config
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        config=config,
+        **kwargs
+    )
+
+    # 4) Optional layer freezing
+    if freeze_layers is not None:
+        if freeze_layers == -1:
+            # freeze entire encoder stack
+            base = getattr(model, "base_model", None)
+            params = base.parameters() if base is not None else model.parameters()
+            for p in params:
+                p.requires_grad = False
+        elif isinstance(freeze_layers, int) and freeze_layers > 0:
+            _freeze_layers(model, freeze_layers)
 
     return model
+
 
 
 def _freeze_layers(model, num_layers: int):

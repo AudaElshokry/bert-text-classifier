@@ -12,7 +12,8 @@ from transformers import get_linear_schedule_with_warmup
 import torch.optim as optim
 from sklearn.metrics import (
     accuracy_score, f1_score, classification_report, confusion_matrix,
-    precision_score, recall_score, precision_recall_fscore_support, roc_auc_score
+    precision_score, recall_score, precision_recall_fscore_support, roc_auc_score,
+    ConfusionMatrixDisplay
 )
 from tqdm.auto import tqdm
 import pandas as pd
@@ -457,8 +458,8 @@ class BertTrainer:
 
     @torch.no_grad()
     def save_predictions(self, dataset, path_csv: str):
-        """Evaluate and write a CSV with columns: label_true, label_pred."""
-        metrics, trues, preds = self.eval(dataset)
+        # 👇 ensure the order matches eval()'s return: (metrics, preds, trues)
+        metrics, preds, trues = self.eval(dataset)
         df = pd.DataFrame({"label_true": trues, "label_pred": preds})
         out_dir = os.path.dirname(path_csv)
         if out_dir:
@@ -558,7 +559,10 @@ class BertTrainer:
         with open(os.path.join(out_dir, "classification_report.txt"), "w", encoding="utf-8") as f:
             f.write(report)
 
-        cm = confusion_matrix(trues, preds, labels=labels_idx)
+        # enforce consistent order for binary labels: 0=NOT, 1=OFF
+        labels_order = [0, 1]
+        cm = confusion_matrix(trues, preds, labels=labels_order)
+        disp = ConfusionMatrixDisplay(cm, display_labels=["NOT", "OFF"])
 
         fig, ax = plt.subplots(figsize=(8, 6))
         im = ax.imshow(cm, cmap='Blues')
@@ -649,7 +653,7 @@ class BertTrainer:
         print("📊 Generating comprehensive research report...")
 
         # 1) Final evaluation on test set (with per-class metrics)
-        test_metrics, test_trues, test_preds = self.eval(test_ds, return_per_class=True)
+        test_metrics, test_preds, test_trues = self.eval(test_ds, return_per_class=True)
 
         # 2) Save test metrics
         with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:

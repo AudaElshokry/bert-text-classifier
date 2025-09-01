@@ -1,1 +1,1 @@
-pip install -q --upgrade --no-deps --no-cache-dir "transformers>=4.41,<5" "seqeval==1.2.2"
+!pip install -q --upgrade "transformers>=4.41,<5" "seqeval==1.2.2"

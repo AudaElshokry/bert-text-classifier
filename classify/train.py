@@ -1,8 +1,9 @@
-#train.py
+# train.py
 import argparse
 import os
 import json
 import time
+from pathlib import Path
 import torch
 
 from transformers import AutoTokenizer
@@ -15,6 +16,7 @@ from classify.utils import (
     build_label_maps,
     apply_label_map,
     save_label_map,
+    validate_dataset_splits,
 )
 
 # ---- BEGIN compat defaults shim ----
@@ -25,12 +27,12 @@ def _ensure_defaults(ns):
         freeze_layers=None,   # int|None  (-1 means freeze all)
         gpus=None,            # str|list|None
         resume_from=None,     # str|None
-        grad_accum_steps=1,   # int (legacy name, trainer may still read it)
+        grad_accum_steps=1,   # int (legacy name)
     )
     for k, v in defaults.items():
         if not hasattr(ns, k):
             setattr(ns, k, v)
-    # Also mirror gradient_accumulation_steps into legacy name if present
+    # Mirror gradient_accumulation_steps into legacy name if present
     if hasattr(ns, "gradient_accumulation_steps") and not hasattr(ns, "grad_accum_steps"):
         setattr(ns, "grad_accum_steps", getattr(ns, "gradient_accumulation_steps"))
     return ns
@@ -63,25 +65,17 @@ def build_argparser():
     ap.add_argument("--gpus", type=int, nargs="*", default=None, help="Visible GPU IDs, e.g., --gpus 0 1")
 
     # Research/quality-of-life features
-    ap.add_argument(
-        "--class_weights", type=float, nargs="+", default=None,
-        help="Class weights for imbalance (e.g., --class_weights 1.0 2.0 0.8)"
-    )
-    ap.add_argument(
-        "--gradient_accumulation_steps", type=int, default=1,
-        help="Number of steps to accumulate gradients before optimizer step"
-    )
-    ap.add_argument(
-        "--eval_steps", type=int, default=None,
-        help="Evaluate every N optimizer steps (default: end of epoch)"
-    )
-    ap.add_argument(
-        "--save_steps", type=int, default=None,
-        help="Save checkpoint every N optimizer steps"
-    )
-    ap.add_argument("--resume_from", default=None, help="Path to checkpoint-*/checkpoint.pt (optional)")
+    ap.add_argument("--class_weights", type=float, nargs="+", default=None,
+                    help="Class weights for imbalance (e.g., --class_weights 1.0 2.0)")
+    ap.add_argument("--gradient_accumulation_steps", type=int, default=1,
+                    help="Accumulate gradients before optimizer step")
+    ap.add_argument("--eval_steps", type=int, default=None,
+                    help="Evaluate every N optimizer steps (default: end of epoch)")
+    ap.add_argument("--save_steps", type=int, default=None,
+                    help="Save checkpoint every N optimizer steps")
+    ap.add_argument("--resume_from", default=None,
+                    help="Path to checkpoint-*/checkpoint.pt (optional)")
     return ap
-
 
 def _coerce_args(args):
     """Accept None|dict|Namespace."""
@@ -93,50 +87,32 @@ def _coerce_args(args):
         return args
     raise TypeError("args must be None, dict, or argparse.Namespace")
 
-
 def main(args=None):
     # ---------------- parse args ----------------
     args = _coerce_args(args)
-    # 🔒 Ensure compatibility defaults so AttributeError can never happen
     args = _ensure_defaults(args)
 
     # ---------------- GPU visibility (set first) ----------------
-    # Set CUDA_VISIBLE_DEVICES before any torch.cuda.* queries
     if getattr(args, "gpus", None) is not None:
-        # Support both list[int] and single int/str
         if isinstance(args.gpus, (list, tuple)):
             os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in args.gpus)
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpus)
-
         print(f"✅ Set CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
 
-    # CRITICAL: Force PyTorch to re-initialize CUDA context after setting visible devices
-    # This ensures the new device visibility is respected
-    if 'CUDA_VISIBLE_DEVICES' in os.environ and torch.cuda.is_available():
-        # Clear any existing CUDA context
+    # Re-evaluate CUDA after visibility change
+    if "CUDA_VISIBLE_DEVICES" in os.environ and torch.cuda.is_available():
         torch.cuda.empty_cache()
-        # Re-check available devices
         available_gpus = torch.cuda.device_count()
         print(f"📊 Available GPUs after setting visibility: {available_gpus}")
-
         if available_gpus == 0:
             print("⚠️  Warning: No GPUs available after setting CUDA_VISIBLE_DEVICES")
-            # Fall back to CPU
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
-            if hasattr(args, 'device'):
-                args.device = 'cpu'
-        else:
-            # Validate that the requested GPUs are actually available
-            requested_gpus = os.environ['CUDA_VISIBLE_DEVICES'].split(',')
-            if len(requested_gpus) > available_gpus:
-                print(f"⚠️  Warning: Requested {len(requested_gpus)} GPUs but only {available_gpus} available")
-                # Adjust to available count
-                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(available_gpus))
 
     # ---------------- housekeeping ----------------
     seed_everything(args.seed)
-    os.makedirs(args.output_path, exist_ok=True)
+    out_dir = Path(args.output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     print("🔧 Setting up experiment...")
     print(f"💻 Final device setup: {torch.cuda.device_count()} GPUs available")
@@ -144,12 +120,22 @@ def main(args=None):
         for i in range(torch.cuda.device_count()):
             print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
 
-        # ---------------- load data ----------------
-    train_df = read_csv_required(args.train_path)
-    val_df   = read_csv_required(args.val_path)
-    test_df  = read_csv_required(args.test_path)
+    # ---------------- load data ----------------
+    train_df = read_csv_required(args.train_path, verbose=True)
+    val_df   = read_csv_required(args.val_path,   verbose=True)
+    test_df  = read_csv_required(args.test_path,  verbose=True)
 
-    # Build label maps (TRAIN ONLY), then apply to all splits
+    # Split-integrity check
+    overlap = validate_dataset_splits(args.train_path, args.val_path, args.test_path)
+    if overlap.get("error"):
+        raise RuntimeError(f"Split validation error: {overlap['error']}")
+    if overlap.get("has_overlap"):
+        raise RuntimeError(
+            f"Found {overlap['overlap_count']} duplicate texts across splits "
+            f"({overlap.get('overlap_percentage', 0):.2f}%). Fix splits before training."
+        )
+
+    # Label maps (build on train, apply to all)
     label2id, id2label = build_label_maps(train_df)
     train_df = apply_label_map(train_df, label2id)
     val_df   = apply_label_map(val_df,   label2id)
@@ -162,7 +148,9 @@ def main(args=None):
     print(f"🏷️  Classes: {num_labels} -> {classes_ordered}")
 
     # ---------------- tokenizer & datasets ----------------
-    tokenizer = AutoTokenizer.from_pretrained(args.bert_model)
+    tokenizer = AutoTokenizer.from_pretrained(args.bert_model, use_fast=True)
+    if hasattr(tokenizer, "model_max_length") and tokenizer.model_max_length and args.max_len:
+        tokenizer.model_max_length = max(int(args.max_len), 8)
     train_ds = TextDataset(train_df["text"].tolist(), train_df["label"].tolist(), tokenizer, max_len=args.max_len)
     val_ds   = TextDataset(val_df["text"].tolist(),   val_df["label"].tolist(),   tokenizer, max_len=args.max_len)
     test_ds  = TextDataset(test_df["text"].tolist(),  test_df["label"].tolist(),  tokenizer, max_len=args.max_len)
@@ -173,27 +161,23 @@ def main(args=None):
         num_labels=num_labels,
         id2label={i: id2label[i] for i in range(num_labels)},
         label2id=label2id,
-        dropout_rate=getattr(args, "dropout_rate", None),
+        dropout_rate = getattr(args, "dropout_rate", None),
         freeze_layers=getattr(args, "freeze_layers", None),
     )
 
-    # ---------------- optional: auto class weights ----------------
-    # If user didn't supply --class_weights, compute N / (K * count_c) heuristic
+    # ---------------- class weights ----------------
     class_weights = getattr(args, "class_weights", None)
     if class_weights is None:
         counts = train_df["label"].value_counts().to_dict()
         N, K = len(train_df), num_labels
-        auto_class_weights = [float(N) / (K * float(counts.get(i, 1))) for i in range(K)]
-        class_weights = auto_class_weights
-
-    # Validate class weights size
+        class_weights = [float(N) / (K * float(counts.get(i, 1))) for i in range(K)]
     if class_weights is not None and len(class_weights) != num_labels:
         raise ValueError(
             f"Class weights length ({len(class_weights)}) must match number of classes ({num_labels})"
         )
 
     # ---------------- trainer args ----------------
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
     print(f"⚙️  Using device: {device}")
 
     targs = TrainArgs(
@@ -213,7 +197,6 @@ def main(args=None):
         save_steps=getattr(args, "save_steps", None),
     )
 
-    # Robust resume handling
     resume_from = getattr(args, "resume_from", None)
     if resume_from and not os.path.exists(resume_from):
         print(f"⚠️  Resume checkpoint not found: {resume_from}")
@@ -231,7 +214,7 @@ def main(args=None):
         class_weights=class_weights,
     )
 
-    # ---------------- save initial experiment config ----------------
+    # ---------------- experiment config (base) ----------------
     experiment_config = {
         "bert_model": args.bert_model,
         "batch_size": args.batch_size,
@@ -249,19 +232,16 @@ def main(args=None):
         "eval_steps": getattr(args, "eval_steps", None),
         "save_steps": getattr(args, "save_steps", None),
         "resume_from": resume_from,
-        "resolved_class_weights": class_weights,  # after auto-compute if needed
+        "resolved_class_weights": class_weights,
         "dataset_stats": {
             "train_samples": len(train_df),
             "val_samples": len(val_df),
             "test_samples": len(test_df),
             "num_classes": num_labels,
         },
-        "device": device,
         "output_path": args.output_path,
         "label2id": label2id,
     }
-    with open(os.path.join(args.output_path, "experiment_config.json"), "w", encoding="utf-8") as f:
-        json.dump(experiment_config, f, ensure_ascii=False, indent=2)
 
     # ---------------- train + time it ----------------
     train_start = time.time()
@@ -270,18 +250,32 @@ def main(args=None):
     training_time_seconds = train_end - train_start
     training_time_human = time.strftime("%H:%M:%S", time.gmtime(training_time_seconds))
 
-    # ---------------- single-pass research artifacts ----------------
+    # ---------------- research artifacts ----------------
     total_start = train_start
     trainer.generate_research_report(test_ds, args.output_path)
     total_end = time.time()
     total_time_seconds = total_end - total_start
     total_time_human = time.strftime("%H:%M:%S", time.gmtime(total_time_seconds))
 
-    # Update experiment_config with timing info
+    # Enrich config and save once
+    try:
+        import transformers, sys
+        experiment_config["lib_versions"] = {
+            "python": sys.version.split()[0],
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+        }
+    except Exception:
+        pass
+    experiment_config["device"] = device
+    experiment_config["effective_batch_size"] = int(args.batch_size) * int(getattr(args, "gradient_accumulation_steps", 1))
+    experiment_config["visible_gpus"] = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    experiment_config["cuda_device_count"] = torch.cuda.device_count()
     experiment_config["training_time_seconds"] = training_time_seconds
     experiment_config["training_time_human"] = training_time_human
     experiment_config["total_time_seconds"] = total_time_seconds
     experiment_config["total_time_human"] = total_time_human
+
     with open(os.path.join(args.output_path, "experiment_config.json"), "w", encoding="utf-8") as f:
         json.dump(experiment_config, f, ensure_ascii=False, indent=2)
 
@@ -296,6 +290,6 @@ def main(args=None):
     print(f"📊 Test F1 macro: {test_metrics['f1_macro']:.4f}")
     print(f"📁 Results saved to: {args.output_path}")
 
-
 if __name__ == "__main__":
     main()
+
